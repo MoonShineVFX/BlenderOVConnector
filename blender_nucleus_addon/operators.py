@@ -577,6 +577,26 @@ class OMNI_OT_ExportUSD(Operator):
     # the textures are already in the cache mirror from the prior Open.
     is_new_file: BoolProperty(default=False, options={"HIDDEN", "SKIP_SAVE"})
 
+    # Export filters mirroring wm.usd_export property names so they can be
+    # splatted straight into the kwargs. Anything this Blender build doesn't
+    # support is filtered out in execute() via the supported-set check.
+    # World Dome Light defaults off — this addon targets asset round-trips,
+    # and a stray dome light is the kind of thing that quietly corrupts an
+    # asset on save (the bug that motivated exposing this dialog).
+    selection_only: BoolProperty(name="Selection Only", default=False)
+    export_animation: BoolProperty(name="Animation", default=False)
+    export_meshes: BoolProperty(name="Meshes", default=True)
+    export_lights: BoolProperty(name="Lights", default=True)
+    export_cameras: BoolProperty(name="Cameras", default=True)
+    export_curves: BoolProperty(name="Curves", default=True)
+    export_points: BoolProperty(name="Point Clouds", default=True)
+    export_volumes: BoolProperty(name="Volumes", default=True)
+    export_hair: BoolProperty(name="Hair", default=False)
+    convert_world_material: BoolProperty(name="World Dome Light", default=False)
+    export_materials: BoolProperty(name="Materials", default=True)
+    export_uvmaps: BoolProperty(name="UV Maps", default=True)
+    export_normals: BoolProperty(name="Normals", default=True)
+
     @classmethod
     def poll(cls, context):
         return not _settings(context).transfer_active
@@ -585,8 +605,7 @@ class OMNI_OT_ExportUSD(Operator):
         s = _settings(context)
         if self.use_source_url and s.source_url:
             self.target_url = s.source_url
-            return self.execute(context)
-        if not self.target_url:
+        elif not self.target_url:
             if s.directory and s.filename:
                 self.target_url = s.directory.rstrip("/") + "/" + s.filename
             elif s.directory:
@@ -597,7 +616,8 @@ class OMNI_OT_ExportUSD(Operator):
 
     def draw(self, context):
         s = _settings(context)
-        col = self.layout.column()
+        layout = self.layout
+        col = layout.column()
         col.label(text="Target Nucleus URL:")
         col.prop(self, "target_url", text="")
         col.separator()
@@ -606,6 +626,30 @@ class OMNI_OT_ExportUSD(Operator):
         sub = row.column()
         sub.enabled = s.set_checkpoint_message
         sub.prop(s, "checkpoint_message", text="Checkpoint message")
+
+        layout.separator()
+        box = layout.box()
+        box.label(text="General")
+        box.prop(self, "selection_only")
+        box.prop(self, "export_animation")
+
+        box = layout.box()
+        box.label(text="Object Types")
+        grid = box.grid_flow(row_major=True, columns=2, even_columns=True)
+        grid.prop(self, "export_meshes")
+        grid.prop(self, "export_lights")
+        grid.prop(self, "convert_world_material")
+        grid.prop(self, "export_cameras")
+        grid.prop(self, "export_curves")
+        grid.prop(self, "export_points")
+        grid.prop(self, "export_volumes")
+        grid.prop(self, "export_hair")
+
+        box = layout.box()
+        box.label(text="Geometry / Materials")
+        box.prop(self, "export_uvmaps")
+        box.prop(self, "export_normals")
+        box.prop(self, "export_materials")
 
     def execute(self, context):
         s = _settings(context)
@@ -633,18 +677,29 @@ class OMNI_OT_ExportUSD(Operator):
 
         try:
             export_kwargs = {"filepath": str(local_main)}
+            # Filter by what this Blender's usd_export actually supports —
+            # property names drift between versions, and we'd rather export
+            # without an unrecognized flag than fail outright.
+            try:
+                supported = set(bpy.ops.wm.usd_export.get_rna_type().properties.keys())
+            except Exception:
+                supported = set()
+
+            for name in (
+                "selection_only", "export_animation",
+                "export_meshes", "export_lights", "export_cameras",
+                "export_curves", "export_points", "export_volumes", "export_hair",
+                "convert_world_material",
+                "export_materials", "export_uvmaps", "export_normals",
+            ):
+                if name in supported:
+                    export_kwargs[name] = getattr(self, name)
+
             if self.is_new_file:
                 # Copy textures next to the .usd in the cache mirror so the
                 # dep-walk below picks them up via local_path_to_url().
                 # Without these flags, brand-new exports skip textures
                 # (they live on the user's disk, not under the cache mirror).
-                # Filter by what this Blender's usd_export actually supports —
-                # older builds lack export_textures/overwrite_textures, and
-                # we'd rather upload a textureless USD than fail outright.
-                try:
-                    supported = set(bpy.ops.wm.usd_export.get_rna_type().properties.keys())
-                except Exception:
-                    supported = set()
                 for opt, val in (
                     ("export_textures", True),
                     ("overwrite_textures", True),
